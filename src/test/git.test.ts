@@ -42,5 +42,8 @@ describe("git helpers", () => {
     expect(isReviewableFilePath("src/app.ts")).toBe(true);
     expect(isReviewableFilePath("assets/logo.png")).toBe(false);
     expect(isReviewableFilePath("dist/app.min.js")).toBe(false);
+    expect(isReviewableFilePath("build/Eval.hi")).toBe(false);
+    expect(isReviewableFilePath("build/Eval.dyn_hi")).toBe(false);
+    expect(isReviewableFilePath("build/Eval.dyn_o")).toBe(false);
   });
 });

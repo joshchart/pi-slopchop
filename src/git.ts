@@ -161,12 +161,13 @@ function createReviewFile(seed: ReviewFileSeed): ReviewFile {
 async function getRevisionContent(pi: ExtensionAPI, repoRoot: string, revision: string, path: string): Promise<string> {
   const result = await pi.exec("git", ["show", `${revision}:${path}`], { cwd: repoRoot });
   if (result.code !== 0) return "";
-  return result.stdout;
+  return sanitizeReviewText(result.stdout);
 }
 
 async function getWorkingTreeContent(repoRoot: string, path: string): Promise<string> {
   try {
-    return await readFile(join(repoRoot, path), "utf8");
+    const content = await readFile(join(repoRoot, path), "utf8");
+    return sanitizeReviewText(content);
   } catch {
     return "";
   }
@@ -188,11 +189,15 @@ export function isReviewableFilePath(path: string): boolean {
     ".bmp",
     ".class",
     ".dll",
+    ".dyn_hi",
+    ".dyn_o",
     ".dylib",
     ".eot",
     ".exe",
     ".gif",
     ".gz",
+    ".hi",
+    ".hie",
     ".ico",
     ".jar",
     ".jpeg",
@@ -223,6 +228,10 @@ export function isReviewableFilePath(path: string): boolean {
   if (fileName.endsWith(".min.js") || fileName.endsWith(".min.css")) return false;
 
   return true;
+}
+
+function sanitizeReviewText(text: string): string {
+  return text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "�");
 }
 
 function compareReviewFiles(a: ReviewFile, b: ReviewFile): number {
