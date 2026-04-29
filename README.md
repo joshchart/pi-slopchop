@@ -169,11 +169,15 @@ That keeps pure discussion prompts strict, and avoids unnecessary instructions w
 #### Navigator
 
 - `↑↓` or `j/k` — move between files
+- `Ctrl+u / Ctrl+d` — move half a page up/down
+- `gg / G` — jump to the top/bottom
 - `Enter` — move focus to diff
 
 #### Diff
 
 - `↑↓` or `j/k` — move between selectable added/deleted lines
+- `Ctrl+u / Ctrl+d` — move half a page up/down
+- `gg / G` — jump to the top/bottom
 - `n / p` — next / previous hunk
 - `f` — line comment, default `FIX`
 - `d` or `c` — line comment, default `DISCUSS`
@@ -191,6 +195,8 @@ Line comment markers in the diff gutter:
 #### Comments panel
 
 - `↑↓` or `j/k` — move through saved comments
+- `Ctrl+u / Ctrl+d` — move half a page up/down
+- `gg / G` — jump to the top/bottom
 - `e` or `Enter` — edit selected comment
 - `d` — delete selected comment
 

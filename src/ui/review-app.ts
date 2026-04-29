@@ -330,6 +330,7 @@ class ReviewApp {
   private diffScroll = 0;
   private commentsScroll = 0;
   private lastWidth = 120;
+  private pendingVimSequence: "g" | null = null;
   private readonly previousHardwareCursor: boolean;
   private readonly syntaxLineCache = new Map<string, string>();
   private readonly renderedDiffLineCache = new Map<string, string[]>();
@@ -511,6 +512,75 @@ class ReviewApp {
       void this.ensureActiveEntry();
     }
     this.searchMode = false;
+    this.requestRender();
+  }
+
+  private clearPendingVimSequence(): void {
+    this.pendingVimSequence = null;
+  }
+
+  private getBodyHeight(): number {
+    const terminalRows = this.tui?.terminal?.rows ?? 28;
+    const totalHeight = Math.max(20, terminalRows - 4);
+    const frameInnerHeight = Math.max(10, totalHeight - 2 - MODAL_INNER_PADDING_Y * 2);
+    return Math.max(6, frameInnerHeight - 5);
+  }
+
+  private getHalfPageStep(): number {
+    const bodyHeight = this.getBodyHeight();
+    const visibleRows = this.state.focus === "navigator"
+      ? Math.max(1, bodyHeight - 4)
+      : Math.max(1, bodyHeight - 5);
+    return Math.max(1, Math.floor(visibleRows / 2));
+  }
+
+  private moveHalfPage(delta: number): void {
+    const step = this.getHalfPageStep();
+    const offset = step * delta;
+
+    if (this.state.focus === "navigator") {
+      this.state = moveActiveFile(this.state, this.options.files, offset);
+      void this.ensureActiveEntry();
+      this.requestRender();
+      return;
+    }
+
+    if (this.state.focus === "diff") {
+      const file = this.activeFile();
+      if (file == null) return;
+      const visibleTargets = this.getVisibleLineTargets(file.id, this.state.activeScope);
+      this.state = moveSelectedLineTarget(this.state, file.id, this.state.activeScope, visibleTargets, offset);
+      this.requestRender();
+      return;
+    }
+
+    const items = getCommentPanelItems(this.state, this.state.activeFileId, this.state.activeScope);
+    this.state = moveSelectedCommentIndex(this.state, items.length, offset);
+    this.requestRender();
+  }
+
+  private jumpToBoundary(direction: "start" | "end"): void {
+    const delta = direction === "start" ? -1 : 1;
+
+    if (this.state.focus === "navigator") {
+      const files = getFilteredFiles(this.options.files, this.state);
+      this.state = moveActiveFile(this.state, this.options.files, delta * files.length);
+      void this.ensureActiveEntry();
+      this.requestRender();
+      return;
+    }
+
+    if (this.state.focus === "diff") {
+      const file = this.activeFile();
+      if (file == null) return;
+      const visibleTargets = this.getVisibleLineTargets(file.id, this.state.activeScope);
+      this.state = moveSelectedLineTarget(this.state, file.id, this.state.activeScope, visibleTargets, delta * visibleTargets.length);
+      this.requestRender();
+      return;
+    }
+
+    const items = getCommentPanelItems(this.state, this.state.activeFileId, this.state.activeScope);
+    this.state = moveSelectedCommentIndex(this.state, items.length, delta * items.length);
     this.requestRender();
   }
 
@@ -798,6 +868,7 @@ class ReviewApp {
 
   handleInput(data: string): void {
     if (this.editTarget != null) {
+      this.clearPendingVimSequence();
       if (matchesKey(data, Key.escape)) {
         this.cancelEditor();
         return;
@@ -821,11 +892,13 @@ class ReviewApp {
     }
 
     if (this.searchMode) {
+      this.clearPendingVimSequence();
       this.handleSearchInput(data);
       return;
     }
 
     if (this.shortcutMode) {
+      this.clearPendingVimSequence();
       if (matchesKey(data, Key.escape)) {
         this.closeShortcutMode();
         return;
@@ -837,6 +910,15 @@ class ReviewApp {
       return;
     }
 
+    if (this.pendingVimSequence === "g") {
+      if (data === "g") {
+        this.clearPendingVimSequence();
+        this.jumpToBoundary("start");
+        return;
+      }
+      this.clearPendingVimSequence();
+    }
+
     if (data === "?") { this.toggleHelpMode(); return; }
     if (this.helpMode && matchesKey(data, Key.escape)) { this.helpMode = false; this.requestRender(); return; }
 
@@ -846,6 +928,10 @@ class ReviewApp {
     if (matchesKey(data, Key.shift("tab"))) { this.state = cycleFocusBackward(this.state); this.requestRender(); return; }
     if (matchesKey(data, Key.tab)) { this.state = cycleFocus(this.state); this.requestRender(); return; }
     if (matchesKey(data, Key.escape)) { this.cancel(); return; }
+    if (matchesKey(data, Key.ctrl("d"))) { this.moveHalfPage(1); return; }
+    if (matchesKey(data, Key.ctrl("u"))) { this.moveHalfPage(-1); return; }
+    if (data === "G") { this.jumpToBoundary("end"); return; }
+    if (data === "g") { this.pendingVimSequence = "g"; return; }
     if (data === "w") { this.state = setWrapLines(this.state, !this.state.wrapLines); this.requestRender(); return; }
     if (data === "u") { this.state = toggleHideUnchanged(this.state); this.ensureLineSelection(); this.requestRender(); return; }
     if (data === "s") { this.submit(); return; }
@@ -1058,6 +1144,7 @@ class ReviewApp {
     lines.push("");
     lines.push(this.theme.fg("warning", "Keys"));
     lines.push(this.theme.fg("muted", "1/2/3 scope • Tab focus • / shortcuts/search • s submit"));
+    lines.push(this.theme.fg("muted", "j/k move • ctrl+u/d half-page • gg/G top/bottom"));
     lines.push(this.theme.fg("muted", "f line fix • d/c line discuss • e edit line • x delete line"));
     lines.push(this.theme.fg("muted", "l file • a all • n/p hunks"));
     lines.push("");
@@ -1232,7 +1319,7 @@ class ReviewApp {
 
     const footer = [
       truncateToWidth(this.theme.fg("dim", promptStatus), frameInnerWidth, "…", false),
-      truncateToWidth(this.theme.fg("dim", "navigator: ↑↓ files • diff: ↑↓ lines, / shortcuts, f fix line, d/c discuss line, e edit, x delete, l file, a all, n/p hunks • comments: e edit, d delete • editor: Tab toggle intent, Enter save, Shift+Enter newline • ? help • w wrap • u toggle unchanged"), frameInnerWidth, "…", false),
+      truncateToWidth(this.theme.fg("dim", "navigator: ↑↓ files • diff: ↑↓ lines, / shortcuts, f fix line, d/c discuss line, e edit, x delete, l file, a all, n/p hunks • comments: e edit, d delete • vim: ctrl+u/d half-page, gg/G top/bottom • editor: Tab toggle intent, Enter save, Shift+Enter newline • ? help • w wrap • u toggle unchanged"), frameInnerWidth, "…", false),
     ];
 
     return renderOuterFrame(this.lastWidth, totalHeight, this.theme, "slopchop", [...headerLines, ...body, ...footer], frameColor);
