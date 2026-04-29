@@ -70,6 +70,7 @@ interface ReviewAppOptions {
 
 const SEARCHABLE_SCOPES: ReviewScope[] = ["git-diff", "last-commit", "all-files"];
 const DEFAULT_CONTEXT_LINES = 3;
+const TEMPLATE_SHORTCUT_KEY = "t";
 
 type Theme = Parameters<ExtensionContext["ui"]["custom"]>[0] extends (tui: any, theme: infer T, kb: any, done: any) => any ? T : never;
 
@@ -86,8 +87,13 @@ function padLine(text: string, width: number): string {
 function wrapAnsiText(text: string, width: number, wrapLines: boolean): string[] {
   const safeWidth = Math.max(1, width);
   if (!wrapLines) return [truncateToWidth(text, safeWidth, "…", false)];
-  const wrapped = wrapTextWithAnsi(text, safeWidth).map((line) => truncateToWidth(line, safeWidth, "", false));
+  const wrapped = wrapTextWithAnsi(text, safeWidth)
+    .map((line) => truncateToWidth(line, safeWidth, "", false));
   return wrapped.length > 0 ? wrapped : [""];
+}
+
+export function wrapUiLines(lines: string[], width: number): string[] {
+  return lines.flatMap((line) => wrapAnsiText(line, width, true));
 }
 
 function getScopeComparison(file: ReviewFile | null, scope: ReviewScope) {
@@ -502,15 +508,15 @@ class ReviewApp {
   private openSearch(): void {
     this.searchMode = true;
     this.searchBuffer = this.state.searchQuery;
-    this.setMessage("Search files; Enter or Esc to finish.");
+    this.state = setFocus(this.state, "navigator");
     this.requestRender();
   }
 
   private closeSearch(apply: boolean): void {
-    if (apply) {
-      this.state = setSearchQuery(this.state, this.options.files, this.searchBuffer);
-      void this.ensureActiveEntry();
-    }
+    const query = apply ? this.searchBuffer : "";
+    this.searchBuffer = query;
+    this.state = setFocus(setSearchQuery(this.state, this.options.files, query), "navigator");
+    void this.ensureActiveEntry();
     this.searchMode = false;
     this.requestRender();
   }
@@ -795,13 +801,13 @@ class ReviewApp {
 
   private openShortcutMode(): void {
     if (this.state.activeScope === "all-files") {
-      this.setMessage("Slash shortcuts are only available in git diff and last commit scopes.");
+      this.setMessage("Template shortcuts are only available in git diff and last commit scopes.");
       this.requestRender();
       return;
     }
     const shortcuts = this.getAvailableShortcuts();
     if (shortcuts.length === 0) {
-      this.setMessage("No slash shortcuts available for the selected line.");
+      this.setMessage("No template shortcuts available for the selected line.");
       this.requestRender();
       return;
     }
@@ -831,7 +837,7 @@ class ReviewApp {
 
     const shortcut = this.getAvailableShortcuts().find((item) => item.key === key.toLowerCase());
     if (shortcut == null) {
-      this.setMessage(`No slash shortcut for '${key}'.`);
+      this.setMessage(`No template shortcut for '${key}'.`);
       this.shortcutMode = false;
       this.requestRender();
       return;
@@ -944,6 +950,7 @@ class ReviewApp {
     if (data === "a") { this.editAllNote(); return; }
     if (data === "n") { this.moveHunk(1); return; }
     if (data === "p") { this.moveHunk(-1); return; }
+    if (data === "/") { this.openSearch(); return; }
 
     if (this.state.focus === "navigator") {
       if (matchesKey(data, Key.down) || data === "j") {
@@ -966,7 +973,7 @@ class ReviewApp {
     }
 
     if (this.state.focus === "diff") {
-      if (data === "/") {
+      if (data === TEMPLATE_SHORTCUT_KEY) {
         this.openShortcutMode();
         return;
       }
@@ -987,7 +994,7 @@ class ReviewApp {
           this.editLineCommentWithIntent("fix");
           return;
         }
-        if (data === "d" || data === "c") {
+        if (data === "d") {
           this.editLineCommentWithIntent("discuss");
           return;
         }
@@ -1002,8 +1009,6 @@ class ReviewApp {
       }
       return;
     }
-
-    if (data === "/") { this.openSearch(); return; }
 
     if (this.state.focus === "comments") {
       const items = getCommentPanelItems(this.state, this.state.activeFileId, this.state.activeScope);
@@ -1148,17 +1153,17 @@ class ReviewApp {
     lines.push(this.theme.fg("muted", "? toggle help • Esc close"));
     lines.push("");
     lines.push(this.theme.fg("warning", "Keys"));
-    lines.push(this.theme.fg("muted", "1/2/3 scope • Tab focus • / shortcuts/search • s submit • ctrl+c cancel"));
+    lines.push(this.theme.fg("muted", "1/2/3 scope • Tab focus • / search • t templates • s submit • ctrl+c cancel"));
     lines.push(this.theme.fg("muted", "j/k move • ctrl+u/d half-page • gg/G top/bottom"));
-    lines.push(this.theme.fg("muted", "f line fix • d/c line discuss • e edit line • x delete line"));
+    lines.push(this.theme.fg("muted", "f line fix • d line discuss • e edit line • x delete line"));
     lines.push(this.theme.fg("muted", "l file • a all • n/p hunks"));
     lines.push("");
     lines.push(this.theme.fg("warning", "Editor"));
     lines.push(this.theme.fg("muted", "Tab toggle • Enter save • Shift+Enter newline • Esc cancel"));
     lines.push("");
-    lines.push(this.theme.fg("warning", "Slash shortcuts"));
+    lines.push(this.theme.fg("warning", "Template shortcuts"));
     if (activeShortcuts.length === 0) {
-      lines.push(this.theme.fg("dim", "No active shortcuts for the current selection."));
+      lines.push(this.theme.fg("dim", "No active template shortcuts for the current selection."));
     } else {
       for (const shortcut of activeShortcuts) {
         const badge = getIntentBadge(this.theme, shortcut.intent);
@@ -1186,8 +1191,8 @@ class ReviewApp {
       lines.push("");
 
       if (shortcuts.length === 0) {
-        lines.push(this.theme.fg("warning", "No shortcuts available."));
-        return renderBox("Slash shortcuts", width, height, this.theme, lines, true);
+        lines.push(this.theme.fg("warning", "No template shortcuts available."));
+        return renderBox("Template shortcuts", width, height, this.theme, lines, true);
       }
 
       const groups = [
@@ -1211,7 +1216,7 @@ class ReviewApp {
         }
       });
 
-      return renderBox("Slash shortcuts", width, height, this.theme, lines, true);
+      return renderBox("Template shortcuts", width, height, this.theme, lines, true);
     }
 
     if (this.helpMode) {
@@ -1252,8 +1257,23 @@ class ReviewApp {
 
     if (items.length === 0) {
       lines.push(this.theme.fg("dim", "No comments yet."));
-      lines.push(this.theme.fg("dim", "Use f/d/c for line, l for file, or a for all."));
-      return renderBox("Comments", width, height, this.theme, lines, this.state.focus === "comments");
+      lines.push(
+        ...wrapUiLines(
+          [this.theme.fg(
+            "dim",
+            "Use f/d for line, l for file, or a for all.",
+          )],
+          Math.max(10, width - 4),
+        ),
+      );
+      return renderBox(
+        "Comments",
+        width,
+        height,
+        this.theme,
+        lines,
+        this.state.focus === "comments",
+      );
     }
 
     const maxBody = Math.max(1, height - 5);
@@ -1285,33 +1305,66 @@ class ReviewApp {
     const terminalRows = this.tui?.terminal?.rows ?? 28;
     const totalHeight = Math.max(20, terminalRows - 4);
     const frameColor = "accent" as const;
-    const frameInnerWidth = Math.max(40, this.lastWidth - 2 - MODAL_INNER_PADDING_X * 2);
-    const frameInnerHeight = Math.max(10, totalHeight - 2 - MODAL_INNER_PADDING_Y * 2);
-    const bodyHeight = Math.max(6, frameInnerHeight - 5);
-    const navigatorWidth = Math.max(24, Math.min(36, Math.floor(frameInnerWidth * 0.26)));
-    const commentsWidth = Math.max(24, Math.min(36, Math.floor(frameInnerWidth * 0.27)));
-    const diffWidth = Math.max(24, frameInnerWidth - navigatorWidth - commentsWidth - 2);
+    const frameInnerWidth = Math.max(
+      40,
+      this.lastWidth - 2 - MODAL_INNER_PADDING_X * 2,
+    );
+    const frameInnerHeight = Math.max(
+      10,
+      totalHeight - 2 - MODAL_INNER_PADDING_Y * 2,
+    );
+    const navigatorWidth = Math.max(
+      24,
+      Math.min(36, Math.floor(frameInnerWidth * 0.26)),
+    );
+    const commentsWidth = Math.max(
+      24,
+      Math.min(36, Math.floor(frameInnerWidth * 0.27)),
+    );
+    const diffWidth = Math.max(
+      24,
+      frameInnerWidth - navigatorWidth - commentsWidth - 2,
+    );
 
-    const promptStatus = this.shortcutMode
-      ? "Shortcut mode • choose from the right panel • Esc cancel"
-      : this.helpMode
-        ? "Help open • ? toggle • Esc close"
-        : this.message ?? (this.searchMode
-          ? `Search: ${this.searchBuffer}`
-          : this.editTarget != null
+    const promptStatus = this.searchMode
+      ? `Search: ${this.searchBuffer || "…"} • Enter apply • Esc clear`
+      : this.shortcutMode
+        ? "Template mode"
+        : this.helpMode
+          ? "Help open"
+          : this.message ?? (this.editTarget != null
             ? `Editing ${formatIntentLabel(this.editTarget.intent).toLowerCase()} comment`
-            : "Tab focus • / search • ? help • 1/2/3 scopes • s submit • ctrl+c cancel");
+            : "1/2/3 scopes • t templates • s submit • ? help");
 
     const scopeTabs = SEARCHABLE_SCOPES.map((scope, index) => {
       const active = this.state.activeScope === scope;
       const count = getScopedFiles(this.options.files, scope).length;
       const text = `${index + 1}:${formatScopeLabel(scope)}(${count})`;
-      return active ? this.theme.bg("selectedBg", this.theme.fg("text", ` ${text} `)) : this.theme.fg("muted", ` ${text} `);
+      return active
+        ? this.theme.bg("selectedBg", this.theme.fg("text", ` ${text} `))
+        : this.theme.fg("muted", ` ${text} `);
     }).join(" ");
 
     const headerLines = [
       truncateToWidth(scopeTabs, frameInnerWidth, "", false),
     ];
+    const footer = wrapUiLines(
+      [
+        this.theme.fg("dim", promptStatus),
+        this.theme.fg(
+          "dim",
+          "diff: ↑↓ lines, t templates, f fix, d discuss, "
+            + "e edit, x delete, l file, a all, n/p hunks • "
+            + "comments: e edit, d delete • ? help • w wrap "
+            + "• u unchanged",
+        ),
+      ],
+      frameInnerWidth,
+    );
+    const bodyHeight = Math.max(
+      6,
+      frameInnerHeight - headerLines.length - footer.length - 2,
+    );
 
     const navigator = this.renderNavigator(navigatorWidth, bodyHeight);
     const diff = this.renderDiff(diffWidth, bodyHeight);
@@ -1322,12 +1375,14 @@ class ReviewApp {
       body.push(`${navigator[i] ?? ""} ${diff[i] ?? ""} ${comments[i] ?? ""}`);
     }
 
-    const footer = [
-      truncateToWidth(this.theme.fg("dim", promptStatus), frameInnerWidth, "…", false),
-      truncateToWidth(this.theme.fg("dim", "navigator: ↑↓ files • diff: ↑↓ lines, / shortcuts, f fix line, d/c discuss line, e edit, x delete, l file, a all, n/p hunks • comments: e edit, d delete • vim: ctrl+u/d half-page, gg/G top/bottom • editor: Tab toggle intent, Enter save, Shift+Enter newline, Esc cancel • ctrl+c cancel review • ? help • w wrap • u toggle unchanged"), frameInnerWidth, "…", false),
-    ];
-
-    return renderOuterFrame(this.lastWidth, totalHeight, this.theme, "slopchop", [...headerLines, ...body, ...footer], frameColor);
+    return renderOuterFrame(
+      this.lastWidth,
+      totalHeight,
+      this.theme,
+      "slopchop",
+      [...headerLines, ...body, ...footer],
+      frameColor,
+    );
   }
 }
 

@@ -70,7 +70,7 @@ ctrl+alt+s
 3. Move to the file and line you care about
 4. Add annotations:
    - `f` for a line annotation with `FIX` preselected
-   - `d` or `c` for a line annotation with `DISCUSS` preselected
+   - `d` for a line annotation with `DISCUSS` preselected
    - `l` for a file annotation
    - `a` for a whole-change note
 5. Press `s` to insert the review prompt into the editor
@@ -78,9 +78,9 @@ ctrl+alt+s
 
 ### Fastest path
 
-If you want speed, use slash shortcuts on a selected diff line:
+If you want speed, use template shortcuts on a selected diff line:
 
-- press `/`
+- press `t`
 - press a shortcut key from the right panel
 
 That creates a templated annotation instantly. If you want to refine it afterwards, press `e` on that same line.
@@ -159,7 +159,7 @@ That keeps pure discussion prompts strict, and avoids unnecessary instructions w
 
 - `1 / 2 / 3` — switch scope
 - `Tab` — cycle focus: navigator → diff → comments
-- `/` — search files, or open slash shortcuts in diff focus
+- `/` — focus the navigator and search files (`Enter` apply, `Esc` clear)
 - `?` — toggle help in the right sidebar
 - `w` — toggle wrapping
 - `u` — toggle unchanged context in diff scopes
@@ -180,12 +180,12 @@ That keeps pure discussion prompts strict, and avoids unnecessary instructions w
 - `gg / G` — jump to the top/bottom
 - `n / p` — next / previous hunk
 - `f` — line comment, default `FIX`
-- `d` or `c` — line comment, default `DISCUSS`
+- `d` — line comment, default `DISCUSS`
 - `e` — edit the existing line comment on the selected line
 - `x` — delete the existing line comment on the selected line
 - `l` — file comment
 - `a` — whole-change note
-- `/` — open slash shortcut mode for the selected line
+- `t` — open template shortcut mode for the selected line
 
 Line comment markers in the diff gutter:
 
@@ -207,11 +207,11 @@ Line comment markers in the diff gutter:
 - `Shift+Enter` — newline
 - `Esc` — cancel editor
 
-### Slash shortcut mode
+### Template shortcut mode
 
-Slash shortcut mode is for very fast line comments.
+Template shortcut mode is for very fast line comments.
 
-When you press `/` on a selected diff line:
+When you press `t` on a selected diff line:
 
 - the right sidebar switches to a shortcut panel
 - shortcuts are grouped under `DISCUSS` and `FIX`
@@ -264,7 +264,7 @@ Example:
 Each shortcut has:
 
 - `id` — stable identifier
-- `key` — one-character trigger after `/`
+- `key` — one-character trigger after opening template shortcut mode with `t`
 - `label` — short label shown in the UI
 - `intent` — `fix` or `discuss`
 - `side` — `added`, `deleted`, or `both`
