@@ -164,7 +164,7 @@ That keeps pure discussion prompts strict, and avoids unnecessary instructions w
 - `w` — toggle wrapping
 - `u` — toggle unchanged context in diff scopes
 - `s` — insert the generated prompt into the editor
-- `Esc` — cancel the review
+- `Ctrl+C` — cancel the review
 
 #### Navigator
 

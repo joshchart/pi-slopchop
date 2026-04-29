@@ -867,6 +867,12 @@ class ReviewApp {
   }
 
   handleInput(data: string): void {
+    if (matchesKey(data, Key.ctrl("c"))) {
+      this.clearPendingVimSequence();
+      this.cancel();
+      return;
+    }
+
     if (this.editTarget != null) {
       this.clearPendingVimSequence();
       if (matchesKey(data, Key.escape)) {
@@ -927,7 +933,6 @@ class ReviewApp {
     if (data === "3") { this.setScope("all-files"); return; }
     if (matchesKey(data, Key.shift("tab"))) { this.state = cycleFocusBackward(this.state); this.requestRender(); return; }
     if (matchesKey(data, Key.tab)) { this.state = cycleFocus(this.state); this.requestRender(); return; }
-    if (matchesKey(data, Key.escape)) { this.cancel(); return; }
     if (matchesKey(data, Key.ctrl("d"))) { this.moveHalfPage(1); return; }
     if (matchesKey(data, Key.ctrl("u"))) { this.moveHalfPage(-1); return; }
     if (data === "G") { this.jumpToBoundary("end"); return; }
@@ -1143,7 +1148,7 @@ class ReviewApp {
     lines.push(this.theme.fg("muted", "? toggle help • Esc close"));
     lines.push("");
     lines.push(this.theme.fg("warning", "Keys"));
-    lines.push(this.theme.fg("muted", "1/2/3 scope • Tab focus • / shortcuts/search • s submit"));
+    lines.push(this.theme.fg("muted", "1/2/3 scope • Tab focus • / shortcuts/search • s submit • ctrl+c cancel"));
     lines.push(this.theme.fg("muted", "j/k move • ctrl+u/d half-page • gg/G top/bottom"));
     lines.push(this.theme.fg("muted", "f line fix • d/c line discuss • e edit line • x delete line"));
     lines.push(this.theme.fg("muted", "l file • a all • n/p hunks"));
@@ -1295,7 +1300,7 @@ class ReviewApp {
           ? `Search: ${this.searchBuffer}`
           : this.editTarget != null
             ? `Editing ${formatIntentLabel(this.editTarget.intent).toLowerCase()} comment`
-            : "Tab focus • / search • ? help • 1/2/3 scopes • s submit • Esc cancel");
+            : "Tab focus • / search • ? help • 1/2/3 scopes • s submit • ctrl+c cancel");
 
     const scopeTabs = SEARCHABLE_SCOPES.map((scope, index) => {
       const active = this.state.activeScope === scope;
@@ -1319,7 +1324,7 @@ class ReviewApp {
 
     const footer = [
       truncateToWidth(this.theme.fg("dim", promptStatus), frameInnerWidth, "…", false),
-      truncateToWidth(this.theme.fg("dim", "navigator: ↑↓ files • diff: ↑↓ lines, / shortcuts, f fix line, d/c discuss line, e edit, x delete, l file, a all, n/p hunks • comments: e edit, d delete • vim: ctrl+u/d half-page, gg/G top/bottom • editor: Tab toggle intent, Enter save, Shift+Enter newline • ? help • w wrap • u toggle unchanged"), frameInnerWidth, "…", false),
+      truncateToWidth(this.theme.fg("dim", "navigator: ↑↓ files • diff: ↑↓ lines, / shortcuts, f fix line, d/c discuss line, e edit, x delete, l file, a all, n/p hunks • comments: e edit, d delete • vim: ctrl+u/d half-page, gg/G top/bottom • editor: Tab toggle intent, Enter save, Shift+Enter newline, Esc cancel • ctrl+c cancel review • ? help • w wrap • u toggle unchanged"), frameInnerWidth, "…", false),
     ];
 
     return renderOuterFrame(this.lastWidth, totalHeight, this.theme, "slopchop", [...headerLines, ...body, ...footer], frameColor);
