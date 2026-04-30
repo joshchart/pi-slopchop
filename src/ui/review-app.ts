@@ -525,11 +525,43 @@ class ReviewApp {
     this.pendingVimSequence = null;
   }
 
-  private getBodyHeight(): number {
+  private getPromptStatus(): string {
+    return this.searchMode
+      ? `Search: ${this.searchBuffer || "…"} • Enter apply • Esc clear`
+      : this.shortcutMode
+        ? "Template mode"
+        : this.helpMode
+          ? "Help open"
+          : this.message ?? (this.editTarget != null
+            ? `Editing ${formatIntentLabel(this.editTarget.intent).toLowerCase()} comment`
+            : "1/2/3 scopes • t templates • s submit • ? help");
+  }
+
+  private getFooterLines(width: number): string[] {
+    return wrapUiLines(
+      [
+        this.theme.fg("dim", this.getPromptStatus()),
+        this.theme.fg(
+          "dim",
+          "diff: ↑↓ lines, t templates, f fix, d discuss, "
+            + "e edit, x delete, l file, a all, n/p hunks • "
+            + "comments: e edit, d delete • ? help • w wrap "
+            + "• u unchanged",
+        ),
+      ],
+      width,
+    );
+  }
+
+  private getBodyHeight(width = this.lastWidth): number {
     const terminalRows = this.tui?.terminal?.rows ?? 28;
-    const totalHeight = Math.max(20, terminalRows - 4);
+    const totalHeight = Math.max(20, terminalRows - 2);
+    const frameInnerWidth = Math.max(
+      40,
+      width - 2 - MODAL_INNER_PADDING_X * 2,
+    );
     const frameInnerHeight = Math.max(10, totalHeight - 2 - MODAL_INNER_PADDING_Y * 2);
-    return Math.max(6, frameInnerHeight - 5);
+    return Math.max(6, frameInnerHeight - 1 - this.getFooterLines(frameInnerWidth).length);
   }
 
   private getHalfPageStep(): number {
@@ -1303,7 +1335,7 @@ class ReviewApp {
   render(width: number): string[] {
     this.lastWidth = Math.max(80, width);
     const terminalRows = this.tui?.terminal?.rows ?? 28;
-    const totalHeight = Math.max(20, terminalRows - 4);
+    const totalHeight = Math.max(20, terminalRows - 2);
     const frameColor = "accent" as const;
     const frameInnerWidth = Math.max(
       40,
@@ -1326,16 +1358,6 @@ class ReviewApp {
       frameInnerWidth - navigatorWidth - commentsWidth - 2,
     );
 
-    const promptStatus = this.searchMode
-      ? `Search: ${this.searchBuffer || "…"} • Enter apply • Esc clear`
-      : this.shortcutMode
-        ? "Template mode"
-        : this.helpMode
-          ? "Help open"
-          : this.message ?? (this.editTarget != null
-            ? `Editing ${formatIntentLabel(this.editTarget.intent).toLowerCase()} comment`
-            : "1/2/3 scopes • t templates • s submit • ? help");
-
     const scopeTabs = SEARCHABLE_SCOPES.map((scope, index) => {
       const active = this.state.activeScope === scope;
       const count = getScopedFiles(this.options.files, scope).length;
@@ -1348,22 +1370,10 @@ class ReviewApp {
     const headerLines = [
       truncateToWidth(scopeTabs, frameInnerWidth, "", false),
     ];
-    const footer = wrapUiLines(
-      [
-        this.theme.fg("dim", promptStatus),
-        this.theme.fg(
-          "dim",
-          "diff: ↑↓ lines, t templates, f fix, d discuss, "
-            + "e edit, x delete, l file, a all, n/p hunks • "
-            + "comments: e edit, d delete • ? help • w wrap "
-            + "• u unchanged",
-        ),
-      ],
-      frameInnerWidth,
-    );
+    const footer = this.getFooterLines(frameInnerWidth);
     const bodyHeight = Math.max(
       6,
-      frameInnerHeight - headerLines.length - footer.length - 2,
+      frameInnerHeight - headerLines.length - footer.length,
     );
 
     const navigator = this.renderNavigator(navigatorWidth, bodyHeight);
@@ -1395,11 +1405,11 @@ export async function runReviewApp(
     {
       overlay: true,
       overlayOptions: {
-        anchor: "center",
+        anchor: "top-center",
         width: "100%",
         maxHeight: "100%",
         minWidth: 90,
-        margin: 2,
+        margin: { top: 0, right: 2, bottom: 2, left: 2 },
       },
     },
   );
