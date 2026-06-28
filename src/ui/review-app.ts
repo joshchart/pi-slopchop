@@ -1,20 +1,25 @@
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { Editor, type EditorTheme, Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Editor, type EditorTheme, Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { adjustStructuredDiffContext, buildStructuredDiff, type StructuredDiff, type StructuredDiffVisibleItem } from "../diff.js";
 import {
   clampSelectedLineTarget,
+  clearVisualSelection,
   createInitialReviewState,
   cycleFocus,
   cycleFocusBackward,
   deleteComment,
   ensureActiveFile,
+  getCommentForLine,
   getCommentsForFileScope,
   getFileComment,
   getFilteredFiles,
   getLineComment,
+  getLineCommentRange,
   getScopedFiles,
   getSelectedLineTarget,
+  getVisualSelectionRange,
   hasDraftContent,
+  hasVisualSelection,
   moveActiveFile,
   moveSelectedCommentIndex,
   moveSelectedLineTarget,
@@ -25,14 +30,17 @@ import {
   setSearchQuery,
   setSelectedLineTarget,
   setWrapLines,
+  startVisualSelection,
   toggleHideUnchanged,
+  updateVisualSelectionFocus,
   upsertFileComment,
   upsertLineComment,
+  upsertLineCommentRange,
 } from "../state.js";
 import { detectPiLanguage, highlightCodeLineWithPi } from "../pi-render.js";
 import { getShortcutConfigPath, getShortcutsForSide, type CommentShortcut } from "../shortcuts.js";
 import { highlightJsonLine, highlightMarkdownLine } from "../theme-highlight.js";
-import type { CommentIntent, DiffReviewComment, ReviewFile, ReviewFileContents, ReviewLineTarget, ReviewResult, ReviewScope, ReviewState } from "../types.js";
+import type { CommentIntent, DiffReviewComment, ReviewFile, ReviewFileContents, ReviewLineRange, ReviewLineTarget, ReviewResult, ReviewScope, ReviewState } from "../types.js";
 import { formatIntentLabel, formatScopeLabel } from "../types.js";
 
 interface LoadedEntryReady {
@@ -53,7 +61,7 @@ interface LoadedEntryLoading {
 type LoadedEntry = LoadedEntryReady | LoadedEntryError | LoadedEntryLoading;
 
 type EditTarget =
-  | { kind: "line"; fileId: string; scope: ReviewScope; side: ReviewLineTarget["side"]; line: number; initialBody: string; intent: CommentIntent }
+  | { kind: "line"; fileId: string; scope: ReviewScope; side: ReviewLineTarget["side"]; startLine: number; endLine: number; initialBody: string; intent: CommentIntent }
   | { kind: "file"; fileId: string; scope: ReviewScope; initialBody: string; intent: CommentIntent }
   | { kind: "all"; initialBody: string; intent: CommentIntent };
 
@@ -144,10 +152,44 @@ function formatLineSideLabel(side: ReviewLineTarget["side"]): string {
   return side === "deleted" ? "Deleted" : "Added";
 }
 
+function formatLineSpan(startLine: number, endLine: number): string {
+  return startLine === endLine ? `${startLine}` : `${startLine}-${endLine}`;
+}
+
+function formatLineRangeLabel(range: Pick<ReviewLineRange, "side" | "startLine" | "endLine">): string {
+  const noun = range.startLine === range.endLine ? "line" : "lines";
+  return `${formatLineSideLabel(range.side)} ${noun} ${formatLineSpan(range.startLine, range.endLine)}`;
+}
+
+function formatCommentLocation(path: string, comment: DiffReviewComment): string {
+  if (comment.side === "file" || comment.startLine == null) return path;
+  return `${path}:${formatLineSpan(comment.startLine, comment.endLine ?? comment.startLine)} (${comment.side})`;
+}
+
+export function getVisualSelectionJumpBlockMessage(hasSelection: boolean): string | null {
+  return hasSelection
+    ? "Visual selection only supports contiguous line movement. Press Esc to clear the selection first."
+    : null;
+}
+
+export function getSelectedRangeStatusComment(
+  state: ReviewState,
+  fileId: string,
+  scope: ReviewScope,
+  range: ReviewLineRange | null,
+): DiffReviewComment | undefined {
+  if (range == null) return undefined;
+  return getLineCommentRange(state, fileId, scope, range.side, range.startLine, range.endLine);
+}
+
 function getPanelItemLabel(theme: Theme, item: CommentPanelItem): string {
   if (item.kind === "all") return `${getIntentBadge(theme, item.intent)} All note`;
   if (item.comment.side === "file") return `${getIntentBadge(theme, item.comment.intent)} File comment`;
-  return `${getIntentBadge(theme, item.comment.intent)} ${formatLineSideLabel(item.comment.side)} line ${item.comment.startLine}`;
+  return `${getIntentBadge(theme, item.comment.intent)} ${formatLineRangeLabel({
+    side: item.comment.side,
+    startLine: item.comment.startLine ?? 1,
+    endLine: item.comment.endLine ?? item.comment.startLine ?? 1,
+  })}`;
 }
 
 function centerText(text: string, width: number): string {
@@ -416,15 +458,16 @@ class ReviewApp {
     tone: DiffTone,
     contentText: string,
     isSelected: boolean,
+    isInSelectedRange: boolean,
   ): string[] {
-    const key = `${width}\u001f${wrapLines ? "wrap" : "nowrap"}\u001f${rowKind}\u001f${tone}\u001f${isSelected ? 1 : 0}\u001f${contentText}`;
+    const key = `${width}\u001f${wrapLines ? "wrap" : "nowrap"}\u001f${rowKind}\u001f${tone}\u001f${isSelected ? 1 : 0}\u001f${isInSelectedRange ? 1 : 0}\u001f${contentText}`;
     const cached = this.renderedDiffLineCache.get(key);
     if (cached != null) return cached;
 
     const wrapped = wrapAnsiText(contentText, Math.max(1, width - 2), wrapLines);
     const rendered = wrapped.map((line) => {
       const paddedLine = padLine(line, Math.max(1, width - 2));
-      if (isSelected) return this.theme.bg("selectedBg", paddedLine);
+      if (isSelected || isInSelectedRange) return this.theme.bg("selectedBg", paddedLine);
       if (rowKind === "added" || rowKind === "removed") return applyLineBackground(this.theme, paddedLine, tone);
       return paddedLine;
     });
@@ -464,11 +507,47 @@ class ReviewApp {
     return getCommentableLineTargets(diff);
   }
 
+  private getNavigableLineTargets(fileId: string | null, scope: ReviewScope): ReviewLineTarget[] {
+    const visibleTargets = this.getVisibleLineTargets(fileId, scope);
+    const selectedRange = getVisualSelectionRange(this.state, fileId, scope);
+    if (selectedRange == null) return visibleTargets;
+    const sameSideTargets = visibleTargets.filter((target) => target.side === selectedRange.side);
+    return sameSideTargets.length > 0 ? sameSideTargets : visibleTargets;
+  }
+
+  private getSelectedRange(fileId: string | null, scope: ReviewScope): ReviewLineRange | null {
+    const visualRange = getVisualSelectionRange(this.state, fileId, scope);
+    if (visualRange != null) return visualRange;
+    const target = getSelectedLineTarget(this.state, fileId, scope);
+    if (target == null) return null;
+    return { side: target.side, startLine: target.line, endLine: target.line };
+  }
+
+  private syncVisualSelectionToCurrentTarget(fileId: string, scope: ReviewScope): void {
+    if (!hasVisualSelection(this.state, fileId, scope)) return;
+    const target = getSelectedLineTarget(this.state, fileId, scope);
+    const range = getVisualSelectionRange(this.state, fileId, scope);
+    if (target == null || range == null) return;
+    if (target.side !== range.side) {
+      this.state = clearVisualSelection(this.state, fileId, scope);
+      return;
+    }
+    this.state = updateVisualSelectionFocus(this.state, fileId, scope, target);
+  }
+
   private ensureLineSelection(): void {
     const file = this.activeFile();
     if (file == null) return;
     const visibleTargets = this.getVisibleLineTargets(file.id, this.state.activeScope);
-    this.state = clampSelectedLineTarget(this.state, file.id, this.state.activeScope, visibleTargets);
+    const navigableTargets = this.getNavigableLineTargets(file.id, this.state.activeScope);
+    if (visibleTargets.length === 0) return;
+    if (navigableTargets.length === 0) {
+      this.state = clearVisualSelection(this.state, file.id, this.state.activeScope);
+      this.state = clampSelectedLineTarget(this.state, file.id, this.state.activeScope, visibleTargets);
+      return;
+    }
+    this.state = clampSelectedLineTarget(this.state, file.id, this.state.activeScope, navigableTargets);
+    this.syncVisualSelectionToCurrentTarget(file.id, this.state.activeScope);
   }
 
   private async ensureActiveEntry(): Promise<void> {
@@ -526,6 +605,9 @@ class ReviewApp {
   }
 
   private getPromptStatus(): string {
+    const visualRange = this.getSelectedRange(this.state.activeFileId, this.state.activeScope);
+    const hasActiveVisualSelection = getVisualSelectionRange(this.state, this.state.activeFileId, this.state.activeScope) != null;
+
     return this.searchMode
       ? `Search: ${this.searchBuffer || "…"} • Enter apply • Esc clear`
       : this.shortcutMode
@@ -534,7 +616,9 @@ class ReviewApp {
           ? "Help open"
           : this.message ?? (this.editTarget != null
             ? `Editing ${formatIntentLabel(this.editTarget.intent).toLowerCase()} comment`
-            : "1/2/3 scopes • t templates • s submit • ? help");
+            : hasActiveVisualSelection && visualRange != null
+              ? `Selecting ${formatLineRangeLabel(visualRange).toLowerCase()} • f/d comment • Esc cancel`
+              : "1/2/3 scopes • v/V select • t templates • s submit • ? help");
   }
 
   private getFooterLines(width: number): string[] {
@@ -543,9 +627,9 @@ class ReviewApp {
         this.theme.fg("dim", this.getPromptStatus()),
         this.theme.fg(
           "dim",
-          "diff: ↑↓ lines, t templates, f fix, d discuss, "
+          "diff: ↑↓ lines, v/V select, t templates, f fix, d discuss, "
             + "e edit, x delete, l file, a all, n/p hunks • "
-            + "comments: e edit, d delete • ? help • w wrap "
+            + "comments: e edit, d delete • Esc clear selection • ? help • w wrap "
             + "• u unchanged",
         ),
       ],
@@ -572,6 +656,16 @@ class ReviewApp {
     return Math.max(1, Math.floor(visibleRows / 2));
   }
 
+  private blockNonContiguousVisualSelectionJump(): boolean {
+    const message = getVisualSelectionJumpBlockMessage(
+      hasVisualSelection(this.state, this.state.activeFileId, this.state.activeScope),
+    );
+    if (message == null) return false;
+    this.setMessage(message);
+    this.requestRender();
+    return true;
+  }
+
   private moveHalfPage(delta: number): void {
     const step = this.getHalfPageStep();
     const offset = step * delta;
@@ -584,10 +678,12 @@ class ReviewApp {
     }
 
     if (this.state.focus === "diff") {
+      if (this.blockNonContiguousVisualSelectionJump()) return;
       const file = this.activeFile();
       if (file == null) return;
-      const visibleTargets = this.getVisibleLineTargets(file.id, this.state.activeScope);
-      this.state = moveSelectedLineTarget(this.state, file.id, this.state.activeScope, visibleTargets, offset);
+      const navigableTargets = this.getNavigableLineTargets(file.id, this.state.activeScope);
+      this.state = moveSelectedLineTarget(this.state, file.id, this.state.activeScope, navigableTargets, offset);
+      this.syncVisualSelectionToCurrentTarget(file.id, this.state.activeScope);
       this.requestRender();
       return;
     }
@@ -609,10 +705,12 @@ class ReviewApp {
     }
 
     if (this.state.focus === "diff") {
+      if (this.blockNonContiguousVisualSelectionJump()) return;
       const file = this.activeFile();
       if (file == null) return;
-      const visibleTargets = this.getVisibleLineTargets(file.id, this.state.activeScope);
-      this.state = moveSelectedLineTarget(this.state, file.id, this.state.activeScope, visibleTargets, delta * visibleTargets.length);
+      const navigableTargets = this.getNavigableLineTargets(file.id, this.state.activeScope);
+      this.state = moveSelectedLineTarget(this.state, file.id, this.state.activeScope, navigableTargets, delta * navigableTargets.length);
+      this.syncVisualSelectionToCurrentTarget(file.id, this.state.activeScope);
       this.requestRender();
       return;
     }
@@ -650,7 +748,16 @@ class ReviewApp {
     } else if (target.kind === "file") {
       this.state = upsertFileComment(this.state, target.fileId, target.scope, value, target.intent);
     } else {
-      this.state = upsertLineComment(this.state, target.fileId, target.scope, target.side, target.line, value, target.intent);
+      this.state = upsertLineCommentRange(
+        this.state,
+        target.fileId,
+        target.scope,
+        target.side,
+        target.startLine,
+        target.endLine,
+        value,
+        target.intent,
+      );
     }
 
     this.editTarget = null;
@@ -664,43 +771,80 @@ class ReviewApp {
     this.requestRender();
   }
 
-  private editLineCommentWithIntent(defaultIntent: CommentIntent): void {
+  private getSelectedRangeComment(fileId: string, scope: ReviewScope): DiffReviewComment | undefined {
+    const range = this.getSelectedRange(fileId, scope);
+    if (range == null) return undefined;
+    return getLineCommentRange(this.state, fileId, scope, range.side, range.startLine, range.endLine);
+  }
+
+  private toggleVisualSelection(): void {
     const file = this.activeFile();
     if (file == null) return;
+    const existing = getVisualSelectionRange(this.state, file.id, this.state.activeScope);
+    if (existing != null) {
+      this.state = clearVisualSelection(this.state, file.id, this.state.activeScope);
+      this.requestRender();
+      return;
+    }
+
     const target = getSelectedLineTarget(this.state, file.id, this.state.activeScope);
     if (target == null) {
       this.setMessage("No selectable diff line in view.");
       this.requestRender();
       return;
     }
-    const existing = getLineComment(this.state, file.id, this.state.activeScope, target.side, target.line);
+
+    this.state = startVisualSelection(this.state, file.id, this.state.activeScope, target);
+    this.requestRender();
+  }
+
+  private clearActiveVisualSelection(): boolean {
+    const file = this.activeFile();
+    if (file == null || !hasVisualSelection(this.state, file.id, this.state.activeScope)) return false;
+    this.state = clearVisualSelection(this.state, file.id, this.state.activeScope);
+    this.requestRender();
+    return true;
+  }
+
+  private editLineCommentWithIntent(defaultIntent: CommentIntent): void {
+    const file = this.activeFile();
+    if (file == null) return;
+    const range = this.getSelectedRange(file.id, this.state.activeScope);
+    if (range == null) {
+      this.setMessage("No selectable diff line in view.");
+      this.requestRender();
+      return;
+    }
+    const existing = getLineCommentRange(this.state, file.id, this.state.activeScope, range.side, range.startLine, range.endLine);
     this.openEditor({
       kind: "line",
       fileId: file.id,
       scope: this.state.activeScope,
-      side: target.side,
-      line: target.line,
+      side: range.side,
+      startLine: range.startLine,
+      endLine: range.endLine,
       initialBody: existing?.body ?? "",
-      intent: defaultIntent,
+      intent: existing?.intent ?? defaultIntent,
     });
   }
 
   private editLineComment(): void {
     const file = this.activeFile();
     if (file == null) return;
-    const target = getSelectedLineTarget(this.state, file.id, this.state.activeScope);
-    if (target == null) {
+    const range = this.getSelectedRange(file.id, this.state.activeScope);
+    if (range == null) {
       this.setMessage("No selectable diff line in view.");
       this.requestRender();
       return;
     }
-    const existing = getLineComment(this.state, file.id, this.state.activeScope, target.side, target.line);
+    const existing = getLineCommentRange(this.state, file.id, this.state.activeScope, range.side, range.startLine, range.endLine);
     this.openEditor({
       kind: "line",
       fileId: file.id,
       scope: this.state.activeScope,
-      side: target.side,
-      line: target.line,
+      side: range.side,
+      startLine: range.startLine,
+      endLine: range.endLine,
       initialBody: existing?.body ?? "",
       intent: existing?.intent ?? "fix",
     });
@@ -726,11 +870,11 @@ class ReviewApp {
   private editCurrentLineComment(): void {
     const file = this.activeFile();
     if (file == null) return;
-    const target = getSelectedLineTarget(this.state, file.id, this.state.activeScope);
-    if (target == null) return;
-    const existing = getLineComment(this.state, file.id, this.state.activeScope, target.side, target.line);
+    const existing = this.getSelectedRangeComment(file.id, this.state.activeScope);
     if (existing == null) {
-      this.setMessage("No line comment on selected line.");
+      this.setMessage(getVisualSelectionRange(this.state, file.id, this.state.activeScope) == null
+        ? "No line comment on selected line."
+        : "No line comment on selected range.");
       this.requestRender();
       return;
     }
@@ -740,9 +884,7 @@ class ReviewApp {
   private deleteCurrentLineComment(): void {
     const file = this.activeFile();
     if (file == null) return;
-    const target = getSelectedLineTarget(this.state, file.id, this.state.activeScope);
-    if (target == null) return;
-    const existing = getLineComment(this.state, file.id, this.state.activeScope, target.side, target.line);
+    const existing = this.getSelectedRangeComment(file.id, this.state.activeScope);
     if (existing == null) return;
     this.state = deleteComment(this.state, existing.id);
     this.requestRender();
@@ -774,9 +916,19 @@ class ReviewApp {
       this.editFileComment();
       return;
     }
+    const startLine = item.comment.startLine ?? 1;
+    const endLine = item.comment.endLine ?? startLine;
     this.state = setSelectedLineTarget(this.state, item.comment.fileId, item.comment.scope, {
       side: item.comment.side,
-      line: item.comment.startLine ?? 1,
+      line: endLine,
+    });
+    this.state = startVisualSelection(this.state, item.comment.fileId, item.comment.scope, {
+      side: item.comment.side,
+      line: startLine,
+    });
+    this.state = updateVisualSelectionFocus(this.state, item.comment.fileId, item.comment.scope, {
+      side: item.comment.side,
+      line: endLine,
     });
     this.editLineComment();
   }
@@ -795,14 +947,15 @@ class ReviewApp {
   }
 
   private moveHunk(delta: number): void {
+    if (this.blockNonContiguousVisualSelectionJump()) return;
     const file = this.activeFile();
     const diff = this.getDisplayDiff(file?.id ?? null, this.state.activeScope);
     if (file == null || diff == null || diff.hunks.length === 0) return;
 
-    const visibleTargets = this.getVisibleLineTargets(file.id, this.state.activeScope);
-    const current = getSelectedLineTarget(this.state, file.id, this.state.activeScope) ?? visibleTargets[0] ?? null;
+    const navigableTargets = this.getNavigableLineTargets(file.id, this.state.activeScope);
+    const current = getSelectedLineTarget(this.state, file.id, this.state.activeScope) ?? navigableTargets[0] ?? null;
     const targets = diff.hunks
-      .map((hunk) => visibleTargets.find((target) => {
+      .map((hunk) => navigableTargets.find((target) => {
         const start = target.side === "deleted"
           ? (hunk.oldStartLine ?? hunk.newStartLine ?? target.line)
           : (hunk.newStartLine ?? hunk.oldStartLine ?? target.line);
@@ -821,6 +974,7 @@ class ReviewApp {
     }
     const nextIndex = Math.max(0, Math.min(targets.length - 1, index + delta));
     this.state = setSelectedLineTarget(this.state, file.id, this.state.activeScope, targets[nextIndex]!);
+    this.syncVisualSelectionToCurrentTarget(file.id, this.state.activeScope);
     this.requestRender();
   }
 
@@ -834,6 +988,11 @@ class ReviewApp {
   private openShortcutMode(): void {
     if (this.state.activeScope === "all-files") {
       this.setMessage("Template shortcuts are only available in git diff and last commit scopes.");
+      this.requestRender();
+      return;
+    }
+    if (hasVisualSelection(this.state, this.state.activeFileId, this.state.activeScope)) {
+      this.setMessage("Template shortcuts are only available for a single selected line.");
       this.requestRender();
       return;
     }
@@ -965,6 +1124,7 @@ class ReviewApp {
 
     if (data === "?") { this.toggleHelpMode(); return; }
     if (this.helpMode && matchesKey(data, Key.escape)) { this.helpMode = false; this.requestRender(); return; }
+    if (matchesKey(data, Key.escape) && this.clearActiveVisualSelection()) { return; }
 
     if (data === "1") { this.setScope("git-diff"); return; }
     if (data === "2") { this.setScope("last-commit"); return; }
@@ -1009,16 +1169,22 @@ class ReviewApp {
         this.openShortcutMode();
         return;
       }
+      if (data === "v" || data === "V") {
+        this.toggleVisualSelection();
+        return;
+      }
       const file = this.activeFile();
       if (file != null) {
-        const visibleTargets = this.getVisibleLineTargets(file.id, this.state.activeScope);
+        const navigableTargets = this.getNavigableLineTargets(file.id, this.state.activeScope);
         if (matchesKey(data, Key.down) || data === "j") {
-          this.state = moveSelectedLineTarget(this.state, file.id, this.state.activeScope, visibleTargets, 1);
+          this.state = moveSelectedLineTarget(this.state, file.id, this.state.activeScope, navigableTargets, 1);
+          this.syncVisualSelectionToCurrentTarget(file.id, this.state.activeScope);
           this.requestRender();
           return;
         }
         if (matchesKey(data, Key.up) || data === "k") {
-          this.state = moveSelectedLineTarget(this.state, file.id, this.state.activeScope, visibleTargets, -1);
+          this.state = moveSelectedLineTarget(this.state, file.id, this.state.activeScope, navigableTargets, -1);
+          this.syncVisualSelectionToCurrentTarget(file.id, this.state.activeScope);
           this.requestRender();
           return;
         }
@@ -1126,10 +1292,12 @@ class ReviewApp {
     }
 
     const diff = this.getDisplayDiff(file.id, this.state.activeScope)!;
-    const visibleTargets = this.getVisibleLineTargets(file.id, this.state.activeScope);
+    const navigableTargets = this.getNavigableLineTargets(file.id, this.state.activeScope);
     const language = detectPiLanguage(file.path);
-    this.state = clampSelectedLineTarget(this.state, file.id, this.state.activeScope, visibleTargets);
+    this.state = clampSelectedLineTarget(this.state, file.id, this.state.activeScope, navigableTargets);
+    this.syncVisualSelectionToCurrentTarget(file.id, this.state.activeScope);
     const selectedTarget = getSelectedLineTarget(this.state, file.id, this.state.activeScope);
+    const selectedRange = this.getSelectedRange(file.id, this.state.activeScope);
     const displayRows = buildDisplayRows(diff);
     const rendered: string[] = [];
     let selectedIndex = 0;
@@ -1139,8 +1307,14 @@ class ReviewApp {
         && row.commentSide != null
         && selectedTarget?.line === row.commentLineNumber
         && selectedTarget.side === row.commentSide;
+      const isInSelectedRange = row.commentLineNumber != null
+        && row.commentSide != null
+        && selectedRange != null
+        && row.commentSide === selectedRange.side
+        && selectedRange.startLine <= row.commentLineNumber
+        && row.commentLineNumber <= selectedRange.endLine;
       const lineComment = row.commentLineNumber != null && row.commentSide != null
-        ? getLineComment(this.state, file.id, this.state.activeScope, row.commentSide, row.commentLineNumber)
+        ? getCommentForLine(this.state, file.id, this.state.activeScope, row.commentSide, row.commentLineNumber)
         : undefined;
 
       let contentText: string;
@@ -1165,7 +1339,7 @@ class ReviewApp {
         contentText = `${gutterLine} ${gutterSign} ${commentIndicator} ${highlightedCode}`;
       }
 
-      const renderedLines = this.getCachedRenderedDiffLines(width, this.state.wrapLines, row.kind, tone, contentText, isSelected);
+      const renderedLines = this.getCachedRenderedDiffLines(width, this.state.wrapLines, row.kind, tone, contentText, isSelected, isInSelectedRange);
       if (isSelected) selectedIndex = rendered.length;
       rendered.push(...renderedLines);
     }
@@ -1185,9 +1359,9 @@ class ReviewApp {
     lines.push(this.theme.fg("muted", "? toggle help • Esc close"));
     lines.push("");
     lines.push(this.theme.fg("warning", "Keys"));
-    lines.push(this.theme.fg("muted", "1/2/3 scope • Tab focus • / search • t templates • s submit • ctrl+c cancel"));
-    lines.push(this.theme.fg("muted", "j/k move • ctrl+u/d half-page • gg/G top/bottom"));
-    lines.push(this.theme.fg("muted", "f line fix • d line discuss • e edit line • x delete line"));
+    lines.push(this.theme.fg("muted", "1/2/3 scope • Tab focus • / search • v/V select • t templates • s submit • ctrl+c cancel"));
+    lines.push(this.theme.fg("muted", "j/k move • ctrl+u/d half-page • gg/G top/bottom • Esc clear selection"));
+    lines.push(this.theme.fg("muted", "f line/range fix • d line/range discuss • e edit line • x delete line"));
     lines.push(this.theme.fg("muted", "l file • a all • n/p hunks"));
     lines.push("");
     lines.push(this.theme.fg("warning", "Editor"));
@@ -1260,7 +1434,7 @@ class ReviewApp {
         ? "All note"
         : this.editTarget.kind === "file"
           ? "File comment"
-          : `${formatLineSideLabel(this.editTarget.side)} line ${this.editTarget.line}`));
+          : formatLineRangeLabel(this.editTarget)));
       lines.push(`${getIntentBadge(this.theme, this.editTarget.intent)} ${this.theme.fg("dim", "Tab toggle")}`);
       lines.push(this.theme.fg("dim", "Enter save • Shift+Enter newline"));
       lines.push(this.theme.fg("dim", "Esc cancel"));
@@ -1276,14 +1450,12 @@ class ReviewApp {
 
     if (file != null) {
       const fileComment = getFileComment(this.state, file.id, this.state.activeScope);
-      const selectedTarget = getSelectedLineTarget(this.state, file.id, this.state.activeScope);
-      const lineComment = selectedTarget == null
-        ? undefined
-        : getLineComment(this.state, file.id, this.state.activeScope, selectedTarget.side, selectedTarget.line);
+      const selectedRange = this.getSelectedRange(file.id, this.state.activeScope);
+      const lineComment = getSelectedRangeStatusComment(this.state, file.id, this.state.activeScope, selectedRange);
       lines.push(this.theme.fg("muted", `file: ${fileComment ? "commented" : "none"}`));
-      lines.push(this.theme.fg("muted", selectedTarget == null
+      lines.push(this.theme.fg("muted", selectedRange == null
         ? "line —: none"
-        : `${formatLineSideLabel(selectedTarget.side).toLowerCase()} ${selectedTarget.line}: ${lineComment ? "commented" : "none"}`));
+        : `${formatLineRangeLabel(selectedRange).toLowerCase()}: ${lineComment ? "commented" : "none"}`));
       lines.push("");
     }
 
@@ -1324,7 +1496,7 @@ class ReviewApp {
         lines.push(`   ${line}`);
       }
       if (item.kind === "comment" && item.comment.side !== "file") {
-        lines.push(this.theme.fg("dim", `   ${getScopeDisplayPath(file, this.state.activeScope)}:${item.comment.startLine} (${item.comment.side})`));
+        lines.push(this.theme.fg("dim", `   ${formatCommentLocation(getScopeDisplayPath(file, this.state.activeScope), item.comment)}`));
       }
       lines.push("");
     }

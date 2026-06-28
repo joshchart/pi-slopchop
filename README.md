@@ -69,8 +69,9 @@ ctrl+alt+s
    - otherwise `all files`
 3. Move to the file and line you care about
 4. Add annotations:
-   - `f` for a line annotation with `FIX` preselected
-   - `d` for a line annotation with `DISCUSS` preselected
+   - `f` for a line or selected-range annotation with `FIX` preselected
+   - `d` for a line or selected-range annotation with `DISCUSS` preselected
+   - `v` or `V` to start visual line selection in the diff
    - `l` for a file annotation
    - `a` for a whole-change note
 5. Press `s` to insert the review prompt into the editor
@@ -179,10 +180,12 @@ That keeps pure discussion prompts strict, and avoids unnecessary instructions w
 - `Ctrl+u / Ctrl+d` — move half a page up/down
 - `gg / G` — jump to the top/bottom
 - `n / p` — next / previous hunk
-- `f` — line comment, default `FIX`
-- `d` — line comment, default `DISCUSS`
-- `e` — edit the existing line comment on the selected line
-- `x` — delete the existing line comment on the selected line
+- `v` or `V` — start or clear visual line selection on the current side
+- `Esc` — clear the active visual selection
+- `f` — line/range comment, default `FIX`
+- `d` — line/range comment, default `DISCUSS`
+- `e` — edit the existing line/range comment on the selected line or range
+- `x` — delete the existing line/range comment on the selected line or range
 - `l` — file comment
 - `a` — whole-change note
 - `t` — open template shortcut mode for the selected line

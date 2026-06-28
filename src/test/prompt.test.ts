@@ -149,6 +149,28 @@ describe("composeReviewPrompt", () => {
     expect(prompt).not.toContain("FIX items");
   });
 
+  it("formats multi-line ranges in prompt locations", () => {
+    const prompt = composeReviewPrompt(files, {
+      type: "submit",
+      allComment: "",
+      allIntent: "fix",
+      comments: [
+        {
+          id: "1",
+          fileId: "bar",
+          scope: "git-diff",
+          side: "added",
+          intent: "fix",
+          startLine: 27,
+          endLine: 31,
+          body: "Collapse this block.",
+        },
+      ],
+    });
+
+    expect(prompt).toContain("1. src/bar.ts:27-31 (added)");
+  });
+
   it("uses fix-only instructions with no discuss references", () => {
     const prompt = composeReviewPrompt(files, {
       type: "submit",

@@ -55,6 +55,17 @@ export interface ReviewLineTarget {
   line: number;
 }
 
+export interface ReviewLineRange {
+  side: Exclude<CommentSide, "file">;
+  startLine: number;
+  endLine: number;
+}
+
+export interface ReviewVisualSelection {
+  anchor: ReviewLineTarget;
+  focus: ReviewLineTarget;
+}
+
 export interface ReviewState {
   activeScope: ReviewScope;
   activeFileId: string | null;
@@ -64,6 +75,7 @@ export interface ReviewState {
   hideUnchanged: boolean;
   selectedCommentIndex: number;
   selectedLineTargetByScopeFile: Record<string, ReviewLineTarget>;
+  visualSelectionByScopeFile: Record<string, ReviewVisualSelection>;
   draft: ReviewDraft;
 }
 

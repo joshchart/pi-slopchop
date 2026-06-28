@@ -1,5 +1,16 @@
 import { filterFilesBySearch } from "./search.js";
-import type { CommentIntent, CommentSide, DiffReviewComment, ReviewFile, ReviewFocus, ReviewLineTarget, ReviewScope, ReviewState } from "./types.js";
+import type {
+  CommentIntent,
+  CommentSide,
+  DiffReviewComment,
+  ReviewFile,
+  ReviewFocus,
+  ReviewLineRange,
+  ReviewLineTarget,
+  ReviewScope,
+  ReviewState,
+  ReviewVisualSelection,
+} from "./types.js";
 import { scopeFileKey } from "./types.js";
 
 function hasFilesForScope(files: ReviewFile[], scope: ReviewScope): boolean {
@@ -50,6 +61,7 @@ export function createInitialReviewState(files: ReviewFile[]): ReviewState {
     hideUnchanged: false,
     selectedCommentIndex: 0,
     selectedLineTargetByScopeFile: {},
+    visualSelectionByScopeFile: {},
     draft: {
       allComment: "",
       allIntent: "fix",
@@ -111,6 +123,54 @@ function sameLineTarget(a: ReviewLineTarget | null, b: ReviewLineTarget | null):
   return a?.side === b?.side && a?.line === b?.line;
 }
 
+function sameLineRange(a: ReviewLineRange | null, b: ReviewLineRange | null): boolean {
+  return a?.side === b?.side && a?.startLine === b?.startLine && a?.endLine === b?.endLine;
+}
+
+export function normalizeLineRange(side: ReviewLineTarget["side"], startLine: number, endLine: number): ReviewLineRange {
+  return {
+    side,
+    startLine: Math.min(startLine, endLine),
+    endLine: Math.max(startLine, endLine),
+  };
+}
+
+export function getVisualSelection(state: ReviewState, fileId: string | null, scope: ReviewScope): ReviewVisualSelection | null {
+  if (fileId == null) return null;
+  return state.visualSelectionByScopeFile[scopeFileKey(scope, fileId)] ?? null;
+}
+
+export function getVisualSelectionRange(state: ReviewState, fileId: string | null, scope: ReviewScope): ReviewLineRange | null {
+  const selection = getVisualSelection(state, fileId, scope);
+  if (selection == null || selection.anchor.side !== selection.focus.side) return null;
+  return normalizeLineRange(selection.anchor.side, selection.anchor.line, selection.focus.line);
+}
+
+export function setVisualSelection(state: ReviewState, fileId: string, scope: ReviewScope, selection: ReviewVisualSelection | null): ReviewState {
+  const key = scopeFileKey(scope, fileId);
+  const next = { ...state.visualSelectionByScopeFile };
+  if (selection == null) {
+    delete next[key];
+  } else {
+    next[key] = selection;
+  }
+  return { ...state, visualSelectionByScopeFile: next };
+}
+
+export function clearVisualSelection(state: ReviewState, fileId: string, scope: ReviewScope): ReviewState {
+  return setVisualSelection(state, fileId, scope, null);
+}
+
+export function startVisualSelection(state: ReviewState, fileId: string, scope: ReviewScope, target: ReviewLineTarget): ReviewState {
+  return setVisualSelection(state, fileId, scope, { anchor: target, focus: target });
+}
+
+export function updateVisualSelectionFocus(state: ReviewState, fileId: string, scope: ReviewScope, focus: ReviewLineTarget): ReviewState {
+  const existing = getVisualSelection(state, fileId, scope);
+  if (existing == null) return startVisualSelection(state, fileId, scope, focus);
+  return setVisualSelection(state, fileId, scope, { anchor: existing.anchor, focus });
+}
+
 export function setSelectedLineTarget(state: ReviewState, fileId: string, scope: ReviewScope, target: ReviewLineTarget): ReviewState {
   return {
     ...state,
@@ -144,21 +204,49 @@ export function moveSelectedLineTarget(state: ReviewState, fileId: string, scope
   return setSelectedLineTarget(state, fileId, scope, visibleTargets[nextIndex]!);
 }
 
-export function getCommentKey(comment: Pick<DiffReviewComment, "fileId" | "scope" | "side" | "startLine">): string {
-  return `${comment.scope}::${comment.fileId}::${comment.side}::${comment.startLine ?? "file"}`;
+export function getCommentKey(comment: Pick<DiffReviewComment, "fileId" | "scope" | "side" | "startLine" | "endLine">): string {
+  return `${comment.scope}::${comment.fileId}::${comment.side}::${comment.startLine ?? "file"}::${comment.endLine ?? "file"}`;
 }
 
 function withTrimmedBody(body: string): string {
   return body.trim();
 }
 
-export function getLineComment(state: ReviewState, fileId: string, scope: ReviewScope, side: Exclude<CommentSide, "file">, line: number): DiffReviewComment | undefined {
+export function getLineCommentRange(state: ReviewState, fileId: string, scope: ReviewScope, side: Exclude<CommentSide, "file">, startLine: number, endLine: number): DiffReviewComment | undefined {
+  const range = normalizeLineRange(side, startLine, endLine);
   return state.draft.comments.find((comment) => (
     comment.fileId === fileId
       && comment.scope === scope
       && comment.side === side
-      && comment.startLine === line
+      && comment.startLine === range.startLine
+      && comment.endLine === range.endLine
   ));
+}
+
+export function getLineComment(state: ReviewState, fileId: string, scope: ReviewScope, side: Exclude<CommentSide, "file">, line: number): DiffReviewComment | undefined {
+  return getLineCommentRange(state, fileId, scope, side, line, line);
+}
+
+export function getCommentForLine(state: ReviewState, fileId: string, scope: ReviewScope, side: Exclude<CommentSide, "file">, line: number): DiffReviewComment | undefined {
+  return state.draft.comments
+    .filter((comment) => (
+      comment.fileId === fileId
+        && comment.scope === scope
+        && comment.side === side
+        && comment.startLine != null
+        && comment.endLine != null
+        && comment.startLine <= line
+        && line <= comment.endLine
+    ))
+    .sort((a, b) => {
+      const aSize = (a.endLine ?? a.startLine ?? 0) - (a.startLine ?? 0);
+      const bSize = (b.endLine ?? b.startLine ?? 0) - (b.startLine ?? 0);
+      if (aSize !== bSize) return aSize - bSize;
+      const aStart = a.startLine ?? 0;
+      const bStart = b.startLine ?? 0;
+      if (aStart !== bStart) return aStart - bStart;
+      return a.id.localeCompare(b.id);
+    })[0];
 }
 
 export function getFileComment(state: ReviewState, fileId: string, scope: ReviewScope): DiffReviewComment | undefined {
@@ -182,6 +270,9 @@ export function getCommentsForFileScope(state: ReviewState, fileId: string, scop
         if (b.side === "deleted") return 1;
       }
       if (aLine !== bLine) return aLine - bLine;
+      const aEnd = a.endLine ?? aLine;
+      const bEnd = b.endLine ?? bLine;
+      if (aEnd !== bEnd) return aEnd - bEnd;
       return a.id.localeCompare(b.id);
     });
 }
@@ -197,27 +288,47 @@ function replaceComment(state: ReviewState, matcher: (comment: DiffReviewComment
   };
 }
 
-export function upsertLineComment(state: ReviewState, fileId: string, scope: ReviewScope, side: Exclude<CommentSide, "file">, line: number, body: string, intent: CommentIntent = "fix"): ReviewState {
+export function upsertLineCommentRange(
+  state: ReviewState,
+  fileId: string,
+  scope: ReviewScope,
+  side: Exclude<CommentSide, "file">,
+  startLine: number,
+  endLine: number,
+  body: string,
+  intent: CommentIntent = "fix",
+): ReviewState {
   const trimmed = withTrimmedBody(body);
-  const existing = getLineComment(state, fileId, scope, side, line);
+  const range = normalizeLineRange(side, startLine, endLine);
+  const existing = getLineCommentRange(state, fileId, scope, side, range.startLine, range.endLine);
   const nextComment = trimmed.length === 0
     ? null
     : {
-        id: existing?.id ?? `line:${scope}:${fileId}:${side}:${line}`,
+        id: existing?.id ?? `line:${scope}:${fileId}:${side}:${range.startLine}-${range.endLine}`,
         fileId,
         scope,
         side,
         intent,
-        startLine: line,
-        endLine: line,
+        startLine: range.startLine,
+        endLine: range.endLine,
         body: trimmed,
       };
 
   return replaceComment(
     state,
-    (comment) => comment.fileId === fileId && comment.scope === scope && comment.side === side && comment.startLine === line,
+    (comment) => (
+      comment.fileId === fileId
+        && comment.scope === scope
+        && comment.side === side
+        && comment.startLine === range.startLine
+        && comment.endLine === range.endLine
+    ),
     nextComment,
   );
+}
+
+export function upsertLineComment(state: ReviewState, fileId: string, scope: ReviewScope, side: Exclude<CommentSide, "file">, line: number, body: string, intent: CommentIntent = "fix"): ReviewState {
+  return upsertLineCommentRange(state, fileId, scope, side, line, line, body, intent);
 }
 
 export function upsertFileComment(state: ReviewState, fileId: string, scope: ReviewScope, body: string, intent: CommentIntent = "fix"): ReviewState {
@@ -272,4 +383,17 @@ export function moveSelectedCommentIndex(state: ReviewState, totalItems: number,
 
 export function hasDraftContent(state: ReviewState): boolean {
   return state.draft.allComment.trim().length > 0 || state.draft.comments.length > 0;
+}
+
+export function hasVisualSelection(state: ReviewState, fileId: string | null, scope: ReviewScope): boolean {
+  return getVisualSelectionRange(state, fileId, scope) != null;
+}
+
+export function sameCommentRange(comment: DiffReviewComment, range: ReviewLineRange): boolean {
+  return sameLineRange(
+    comment.side === "file" || comment.startLine == null || comment.endLine == null
+      ? null
+      : { side: comment.side, startLine: comment.startLine, endLine: comment.endLine },
+    range,
+  );
 }

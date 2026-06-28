@@ -2,17 +2,23 @@ import { describe, expect, it } from "vitest";
 import {
   clampSelectedLineTarget,
   createInitialReviewState,
+  getCommentForLine,
   getDefaultScope,
   getFileComment,
   getFilteredFiles,
   getLineComment,
+  getLineCommentRange,
+  getVisualSelectionRange,
   moveActiveFile,
   moveSelectedCommentIndex,
   moveSelectedLineTarget,
   setScope,
   setSearchQuery,
+  startVisualSelection,
+  updateVisualSelectionFocus,
   upsertFileComment,
   upsertLineComment,
+  upsertLineCommentRange,
 } from "../state.js";
 import type { ReviewFile } from "../types.js";
 
@@ -70,6 +76,25 @@ describe("review state", () => {
     expect(state.draft.comments).toHaveLength(1);
     expect(getFileComment(state, "src/a.ts", "git-diff")?.body).toBe("Two");
     expect(getFileComment(state, "src/a.ts", "git-diff")?.intent).toBe("fix");
+  });
+
+  it("supports exact multi-line range comments", () => {
+    const files = [makeFile("src/a.ts")];
+    let state = createInitialReviewState(files);
+    state = upsertLineCommentRange(state, "src/a.ts", "git-diff", "added", 12, 15, "Range note", "discuss");
+
+    expect(getLineCommentRange(state, "src/a.ts", "git-diff", "added", 12, 15)?.body).toBe("Range note");
+    expect(getLineComment(state, "src/a.ts", "git-diff", "added", 12)).toBeUndefined();
+    expect(getCommentForLine(state, "src/a.ts", "git-diff", "added", 13)?.body).toBe("Range note");
+  });
+
+  it("tracks visual selection ranges", () => {
+    const files = [makeFile("src/a.ts")];
+    let state = createInitialReviewState(files);
+    state = startVisualSelection(state, "src/a.ts", "git-diff", { side: "deleted", line: 9 });
+    state = updateVisualSelectionFocus(state, "src/a.ts", "git-diff", { side: "deleted", line: 5 });
+
+    expect(getVisualSelectionRange(state, "src/a.ts", "git-diff")).toEqual({ side: "deleted", startLine: 5, endLine: 9 });
   });
 
   it("filters files using search query", () => {

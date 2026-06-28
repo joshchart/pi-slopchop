@@ -14,12 +14,17 @@ function formatLocation(comment: DiffReviewComment, file: ReviewFile | undefined
     return filePath;
   }
 
+  const endLine = comment.endLine ?? comment.startLine;
+  const lineLabel = endLine === comment.startLine
+    ? `${comment.startLine}`
+    : `${comment.startLine}-${endLine}`;
+
   if (comment.scope === "all-files") {
-    return `${filePath}:${comment.startLine}`;
+    return `${filePath}:${lineLabel}`;
   }
 
   const suffix = comment.side === "deleted" ? "deleted" : "added";
-  return `${filePath}:${comment.startLine} (${suffix})`;
+  return `${filePath}:${lineLabel} (${suffix})`;
 }
 
 function scopeOrder(scope: ReviewScope): number {
@@ -47,6 +52,10 @@ function sortComments(comments: DiffReviewComment[], fileMap: Map<string, Review
       const aLine = a.startLine ?? -1;
       const bLine = b.startLine ?? -1;
       if (aLine !== bLine) return aLine - bLine;
+
+      const aEnd = a.endLine ?? aLine;
+      const bEnd = b.endLine ?? bLine;
+      if (aEnd !== bEnd) return aEnd - bEnd;
 
       return a.id.localeCompare(b.id);
     });
