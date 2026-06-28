@@ -378,11 +378,12 @@ export function buildDisplayRows(diff: StructuredDiff): DisplayRow[] {
   return rows;
 }
 
-function getCommentableLineTargets(diff: StructuredDiff): ReviewLineTarget[] {
+export function getCommentableLineTargets(diff: StructuredDiff, includeContext = true): ReviewLineTarget[] {
   const seen = new Set<string>();
   const targets: ReviewLineTarget[] = [];
 
   for (const row of buildDisplayRows(diff)) {
+    if (!includeContext && row.kind === "context") continue;
     if (row.commentLineNumber == null || row.commentSide == null) continue;
     const key = `${row.commentSide}:${row.commentLineNumber}`;
     if (seen.has(key)) continue;
@@ -536,7 +537,7 @@ class ReviewApp {
   private getVisibleLineTargets(fileId: string | null, scope: ReviewScope): ReviewLineTarget[] {
     const diff = this.getDisplayDiff(fileId, scope);
     if (diff == null) return [];
-    return getCommentableLineTargets(diff);
+    return getCommentableLineTargets(diff, scope === "all-files");
   }
 
   private getNavigableLineTargets(fileId: string | null, scope: ReviewScope): ReviewLineTarget[] {

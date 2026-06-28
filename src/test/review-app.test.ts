@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { buildStructuredDiff } from "../diff.js";
 import { createInitialReviewState, startVisualSelection, upsertLineCommentRange } from "../state.js";
 import type { ReviewFile } from "../types.js";
-import { buildDisplayRows, getSelectedRangeStatusComment, getVisualSelectionJumpBlockMessage, moveLineTargetBySteps, wrapUiLines } from "../ui/review-app.js";
+import { buildDisplayRows, getCommentableLineTargets, getSelectedRangeStatusComment, getVisualSelectionJumpBlockMessage, moveLineTargetBySteps, wrapUiLines } from "../ui/review-app.js";
 
 describe("buildDisplayRows", () => {
   it("keeps deleted and added rows independently commentable when line numbers overlap", () => {
@@ -24,6 +24,23 @@ describe("buildDisplayRows", () => {
     }))).toEqual([
       { kind: "removed", commentLineNumber: 2, commentSide: "deleted" },
       { kind: "context", commentLineNumber: 2, commentSide: "added" },
+    ]);
+  });
+
+  it("excludes unchanged context from diff-scope line targets", () => {
+    const diff = buildStructuredDiff(
+      ["alpha", "removed", "kept"].join("\n") + "\n",
+      ["alpha", "kept"].join("\n") + "\n",
+      3,
+    );
+
+    expect(getCommentableLineTargets(diff, false)).toEqual([
+      { side: "deleted", line: 2 },
+    ]);
+    expect(getCommentableLineTargets(diff, true)).toEqual([
+      { side: "added", line: 1 },
+      { side: "deleted", line: 2 },
+      { side: "added", line: 2 },
     ]);
   });
 });
