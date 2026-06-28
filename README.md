@@ -177,6 +177,7 @@ That keeps pure discussion prompts strict, and avoids unnecessary instructions w
 #### Diff
 
 - `↑↓` or `j/k` — move between selectable added/deleted lines
+- `1j`, `5k`, `10j`, etc. — repeat `j/k` movement with a count (`1/2/3` still switch scope when pressed alone)
 - `Ctrl+u / Ctrl+d` — move half a page up/down
 - `gg / G` — jump to the top/bottom
 - `n / p` — next / previous hunk

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { buildStructuredDiff } from "../diff.js";
 import { createInitialReviewState, startVisualSelection, upsertLineCommentRange } from "../state.js";
 import type { ReviewFile } from "../types.js";
-import { buildDisplayRows, getSelectedRangeStatusComment, getVisualSelectionJumpBlockMessage, wrapUiLines } from "../ui/review-app.js";
+import { buildDisplayRows, getSelectedRangeStatusComment, getVisualSelectionJumpBlockMessage, moveLineTargetBySteps, wrapUiLines } from "../ui/review-app.js";
 
 describe("buildDisplayRows", () => {
   it("keeps deleted and added rows independently commentable when line numbers overlap", () => {
@@ -59,6 +59,20 @@ describe("visual selection jump behavior", () => {
     expect(getVisualSelectionJumpBlockMessage(true)).toBe(
       "Visual selection only supports contiguous line movement. Press Esc to clear the selection first.",
     );
+  });
+
+  it("supports counted contiguous movement without crossing hidden gaps", () => {
+    const targets = [
+      { side: "added" as const, line: 10 },
+      { side: "added" as const, line: 11 },
+      { side: "added" as const, line: 12 },
+      { side: "added" as const, line: 20 },
+      { side: "added" as const, line: 21 },
+    ];
+
+    expect(moveLineTargetBySteps(targets, targets[0]!, 2, true)).toEqual({ side: "added", line: 12 });
+    expect(moveLineTargetBySteps(targets, targets[0]!, 5, true)).toEqual({ side: "added", line: 12 });
+    expect(moveLineTargetBySteps(targets, targets[2]!, 1, false)).toEqual({ side: "added", line: 20 });
   });
 });
 

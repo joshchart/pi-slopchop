@@ -166,6 +166,37 @@ function formatCommentLocation(path: string, comment: DiffReviewComment): string
   return `${path}:${formatLineSpan(comment.startLine, comment.endLine ?? comment.startLine)} (${comment.side})`;
 }
 
+function sameReviewLineTarget(a: ReviewLineTarget | null, b: ReviewLineTarget | null): boolean {
+  return a?.side === b?.side && a?.line === b?.line;
+}
+
+export function moveLineTargetBySteps(
+  targets: ReviewLineTarget[],
+  current: ReviewLineTarget | null,
+  delta: number,
+  contiguousOnly = false,
+): ReviewLineTarget | null {
+  if (targets.length === 0 || delta === 0) return current ?? targets[0] ?? null;
+
+  const direction = delta < 0 ? -1 : 1;
+  const totalSteps = Math.abs(delta);
+  let index = current == null ? 0 : targets.findIndex((target) => sameReviewLineTarget(target, current));
+  if (index < 0) index = 0;
+  let active = targets[index] ?? null;
+  if (active == null) return null;
+
+  for (let step = 0; step < totalSteps; step += 1) {
+    const nextIndex = Math.max(0, Math.min(targets.length - 1, index + direction));
+    if (nextIndex === index) break;
+    const candidate = targets[nextIndex]!;
+    if (contiguousOnly && (candidate.side !== active.side || candidate.line !== active.line + direction)) break;
+    index = nextIndex;
+    active = candidate;
+  }
+
+  return active;
+}
+
 export function getVisualSelectionJumpBlockMessage(hasSelection: boolean): string | null {
   return hasSelection
     ? "Visual selection only supports contiguous line movement. Press Esc to clear the selection first."
@@ -379,6 +410,9 @@ class ReviewApp {
   private commentsScroll = 0;
   private lastWidth = 120;
   private pendingVimSequence: "g" | null = null;
+  private pendingCount: number | null = null;
+  private pendingScopeDigit: "1" | "2" | "3" | null = null;
+  private pendingScopeTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly previousHardwareCursor: boolean;
   private readonly syntaxLineCache = new Map<string, string>();
   private readonly renderedDiffLineCache = new Map<string, string[]>();
@@ -416,6 +450,7 @@ class ReviewApp {
   }
 
   dispose(): void {
+    this.clearPendingScopeShortcut();
     if (typeof this.tui.setShowHardwareCursor === "function") {
       this.tui.setShowHardwareCursor(this.previousHardwareCursor);
     }
@@ -600,8 +635,18 @@ class ReviewApp {
     this.requestRender();
   }
 
+  private clearPendingScopeShortcut(): void {
+    if (this.pendingScopeTimer != null) {
+      clearTimeout(this.pendingScopeTimer);
+      this.pendingScopeTimer = null;
+    }
+    this.pendingScopeDigit = null;
+  }
+
   private clearPendingVimSequence(): void {
     this.pendingVimSequence = null;
+    this.pendingCount = null;
+    this.clearPendingScopeShortcut();
   }
 
   private getPromptStatus(): string {
@@ -627,7 +672,7 @@ class ReviewApp {
         this.theme.fg("dim", this.getPromptStatus()),
         this.theme.fg(
           "dim",
-          "diff: ↑↓ lines, v/V select, t templates, f fix, d discuss, "
+          "diff: ↑↓ lines, count+j/k move, v/V select, t templates, f fix, d discuss, "
             + "e edit, x delete, l file, a all, n/p hunks • "
             + "comments: e edit, d delete • Esc clear selection • ? help • w wrap "
             + "• u unchanged",
@@ -666,6 +711,55 @@ class ReviewApp {
     return true;
   }
 
+  private appendPendingCountDigit(digit: string): void {
+    const next = `${this.pendingCount ?? ""}${digit}`;
+    this.pendingCount = Number(next);
+    this.requestRender();
+  }
+
+  private applyScopeShortcutDigit(digit: "1" | "2" | "3"): void {
+    if (digit === "1") { this.setScope("git-diff"); return; }
+    if (digit === "2") { this.setScope("last-commit"); return; }
+    this.setScope("all-files");
+  }
+
+  private startPendingScopeShortcut(digit: "1" | "2" | "3"): void {
+    this.clearPendingScopeShortcut();
+    this.pendingScopeDigit = digit;
+    this.pendingScopeTimer = setTimeout(() => {
+      const pendingDigit = this.pendingScopeDigit;
+      this.clearPendingScopeShortcut();
+      if (pendingDigit != null) this.applyScopeShortcutDigit(pendingDigit);
+    }, 250);
+  }
+
+  private promotePendingScopeDigitToCount(): void {
+    const digit = this.pendingScopeDigit;
+    if (digit == null) return;
+    this.clearPendingScopeShortcut();
+    this.appendPendingCountDigit(digit);
+  }
+
+  private consumePendingCount(): number {
+    const count = this.pendingCount ?? 1;
+    this.pendingCount = null;
+    return Math.max(1, count);
+  }
+
+  private moveDiffSelection(fileId: string, delta: number): void {
+    const navigableTargets = this.getNavigableLineTargets(fileId, this.state.activeScope);
+    const current = getSelectedLineTarget(this.state, fileId, this.state.activeScope) ?? navigableTargets[0] ?? null;
+    const next = moveLineTargetBySteps(
+      navigableTargets,
+      current,
+      delta,
+      hasVisualSelection(this.state, fileId, this.state.activeScope),
+    );
+    if (next == null) return;
+    this.state = setSelectedLineTarget(this.state, fileId, this.state.activeScope, next);
+    this.syncVisualSelectionToCurrentTarget(fileId, this.state.activeScope);
+  }
+
   private moveHalfPage(delta: number): void {
     const step = this.getHalfPageStep();
     const offset = step * delta;
@@ -678,12 +772,9 @@ class ReviewApp {
     }
 
     if (this.state.focus === "diff") {
-      if (this.blockNonContiguousVisualSelectionJump()) return;
       const file = this.activeFile();
       if (file == null) return;
-      const navigableTargets = this.getNavigableLineTargets(file.id, this.state.activeScope);
-      this.state = moveSelectedLineTarget(this.state, file.id, this.state.activeScope, navigableTargets, offset);
-      this.syncVisualSelectionToCurrentTarget(file.id, this.state.activeScope);
+      this.moveDiffSelection(file.id, offset);
       this.requestRender();
       return;
     }
@@ -1113,6 +1204,47 @@ class ReviewApp {
       return;
     }
 
+    const isCountMotion = matchesKey(data, Key.down)
+      || matchesKey(data, Key.up)
+      || matchesKey(data, Key.ctrl("d"))
+      || matchesKey(data, Key.ctrl("u"))
+      || data === "j"
+      || data === "k";
+
+    if (this.pendingScopeDigit != null) {
+      if (data >= "0" && data <= "9") {
+        this.promotePendingScopeDigitToCount();
+        this.appendPendingCountDigit(data);
+        return;
+      }
+      if (isCountMotion) {
+        this.promotePendingScopeDigitToCount();
+      } else {
+        const pendingDigit = this.pendingScopeDigit;
+        this.clearPendingScopeShortcut();
+        if (pendingDigit != null) this.applyScopeShortcutDigit(pendingDigit);
+      }
+    }
+
+    if (this.pendingCount != null && data >= "0" && data <= "9") {
+      this.appendPendingCountDigit(data);
+      return;
+    }
+
+    if (data >= "4" && data <= "9") {
+      this.appendPendingCountDigit(data);
+      return;
+    }
+
+    if (data >= "1" && data <= "3") {
+      this.startPendingScopeShortcut(data as "1" | "2" | "3");
+      return;
+    }
+
+    if (this.pendingCount != null && !isCountMotion) {
+      this.pendingCount = null;
+    }
+
     if (this.pendingVimSequence === "g") {
       if (data === "g") {
         this.clearPendingVimSequence();
@@ -1126,13 +1258,10 @@ class ReviewApp {
     if (this.helpMode && matchesKey(data, Key.escape)) { this.helpMode = false; this.requestRender(); return; }
     if (matchesKey(data, Key.escape) && this.clearActiveVisualSelection()) { return; }
 
-    if (data === "1") { this.setScope("git-diff"); return; }
-    if (data === "2") { this.setScope("last-commit"); return; }
-    if (data === "3") { this.setScope("all-files"); return; }
     if (matchesKey(data, Key.shift("tab"))) { this.state = cycleFocusBackward(this.state); this.requestRender(); return; }
     if (matchesKey(data, Key.tab)) { this.state = cycleFocus(this.state); this.requestRender(); return; }
-    if (matchesKey(data, Key.ctrl("d"))) { this.moveHalfPage(1); return; }
-    if (matchesKey(data, Key.ctrl("u"))) { this.moveHalfPage(-1); return; }
+    if (matchesKey(data, Key.ctrl("d"))) { this.moveHalfPage(this.consumePendingCount()); return; }
+    if (matchesKey(data, Key.ctrl("u"))) { this.moveHalfPage(-this.consumePendingCount()); return; }
     if (data === "G") { this.jumpToBoundary("end"); return; }
     if (data === "g") { this.pendingVimSequence = "g"; return; }
     if (data === "w") { this.state = setWrapLines(this.state, !this.state.wrapLines); this.requestRender(); return; }
@@ -1146,13 +1275,13 @@ class ReviewApp {
 
     if (this.state.focus === "navigator") {
       if (matchesKey(data, Key.down) || data === "j") {
-        this.state = moveActiveFile(this.state, this.options.files, 1);
+        this.state = moveActiveFile(this.state, this.options.files, this.consumePendingCount());
         void this.ensureActiveEntry();
         this.requestRender();
         return;
       }
       if (matchesKey(data, Key.up) || data === "k") {
-        this.state = moveActiveFile(this.state, this.options.files, -1);
+        this.state = moveActiveFile(this.state, this.options.files, -this.consumePendingCount());
         void this.ensureActiveEntry();
         this.requestRender();
         return;
@@ -1175,16 +1304,13 @@ class ReviewApp {
       }
       const file = this.activeFile();
       if (file != null) {
-        const navigableTargets = this.getNavigableLineTargets(file.id, this.state.activeScope);
         if (matchesKey(data, Key.down) || data === "j") {
-          this.state = moveSelectedLineTarget(this.state, file.id, this.state.activeScope, navigableTargets, 1);
-          this.syncVisualSelectionToCurrentTarget(file.id, this.state.activeScope);
+          this.moveDiffSelection(file.id, this.consumePendingCount());
           this.requestRender();
           return;
         }
         if (matchesKey(data, Key.up) || data === "k") {
-          this.state = moveSelectedLineTarget(this.state, file.id, this.state.activeScope, navigableTargets, -1);
-          this.syncVisualSelectionToCurrentTarget(file.id, this.state.activeScope);
+          this.moveDiffSelection(file.id, -this.consumePendingCount());
           this.requestRender();
           return;
         }
@@ -1211,12 +1337,12 @@ class ReviewApp {
     if (this.state.focus === "comments") {
       const items = getCommentPanelItems(this.state, this.state.activeFileId, this.state.activeScope);
       if (matchesKey(data, Key.down) || data === "j") {
-        this.state = moveSelectedCommentIndex(this.state, items.length, 1);
+        this.state = moveSelectedCommentIndex(this.state, items.length, this.consumePendingCount());
         this.requestRender();
         return;
       }
       if (matchesKey(data, Key.up) || data === "k") {
-        this.state = moveSelectedCommentIndex(this.state, items.length, -1);
+        this.state = moveSelectedCommentIndex(this.state, items.length, -this.consumePendingCount());
         this.requestRender();
         return;
       }
@@ -1360,7 +1486,7 @@ class ReviewApp {
     lines.push("");
     lines.push(this.theme.fg("warning", "Keys"));
     lines.push(this.theme.fg("muted", "1/2/3 scope • Tab focus • / search • v/V select • t templates • s submit • ctrl+c cancel"));
-    lines.push(this.theme.fg("muted", "j/k move • ctrl+u/d half-page • gg/G top/bottom • Esc clear selection"));
+    lines.push(this.theme.fg("muted", "j/k move • count+j/k repeat • ctrl+u/d half-page • gg/G top/bottom • Esc clear selection"));
     lines.push(this.theme.fg("muted", "f line/range fix • d line/range discuss • e edit line • x delete line"));
     lines.push(this.theme.fg("muted", "l file • a all • n/p hunks"));
     lines.push("");
