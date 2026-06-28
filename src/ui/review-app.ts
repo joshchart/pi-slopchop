@@ -411,8 +411,6 @@ class ReviewApp {
   private lastWidth = 120;
   private pendingVimSequence: "g" | null = null;
   private pendingCount: number | null = null;
-  private pendingScopeDigit: "1" | "2" | "3" | null = null;
-  private pendingScopeTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly previousHardwareCursor: boolean;
   private readonly syntaxLineCache = new Map<string, string>();
   private readonly renderedDiffLineCache = new Map<string, string[]>();
@@ -450,7 +448,6 @@ class ReviewApp {
   }
 
   dispose(): void {
-    this.clearPendingScopeShortcut();
     if (typeof this.tui.setShowHardwareCursor === "function") {
       this.tui.setShowHardwareCursor(this.previousHardwareCursor);
     }
@@ -635,18 +632,9 @@ class ReviewApp {
     this.requestRender();
   }
 
-  private clearPendingScopeShortcut(): void {
-    if (this.pendingScopeTimer != null) {
-      clearTimeout(this.pendingScopeTimer);
-      this.pendingScopeTimer = null;
-    }
-    this.pendingScopeDigit = null;
-  }
-
   private clearPendingVimSequence(): void {
     this.pendingVimSequence = null;
     this.pendingCount = null;
-    this.clearPendingScopeShortcut();
   }
 
   private getPromptStatus(): string {
@@ -715,29 +703,6 @@ class ReviewApp {
     const next = `${this.pendingCount ?? ""}${digit}`;
     this.pendingCount = Number(next);
     this.requestRender();
-  }
-
-  private applyScopeShortcutDigit(digit: "1" | "2" | "3"): void {
-    if (digit === "1") { this.setScope("git-diff"); return; }
-    if (digit === "2") { this.setScope("last-commit"); return; }
-    this.setScope("all-files");
-  }
-
-  private startPendingScopeShortcut(digit: "1" | "2" | "3"): void {
-    this.clearPendingScopeShortcut();
-    this.pendingScopeDigit = digit;
-    this.pendingScopeTimer = setTimeout(() => {
-      const pendingDigit = this.pendingScopeDigit;
-      this.clearPendingScopeShortcut();
-      if (pendingDigit != null) this.applyScopeShortcutDigit(pendingDigit);
-    }, 250);
-  }
-
-  private promotePendingScopeDigitToCount(): void {
-    const digit = this.pendingScopeDigit;
-    if (digit == null) return;
-    this.clearPendingScopeShortcut();
-    this.appendPendingCountDigit(digit);
   }
 
   private consumePendingCount(): number {
@@ -1211,21 +1176,6 @@ class ReviewApp {
       || data === "j"
       || data === "k";
 
-    if (this.pendingScopeDigit != null) {
-      if (data >= "0" && data <= "9") {
-        this.promotePendingScopeDigitToCount();
-        this.appendPendingCountDigit(data);
-        return;
-      }
-      if (isCountMotion) {
-        this.promotePendingScopeDigitToCount();
-      } else {
-        const pendingDigit = this.pendingScopeDigit;
-        this.clearPendingScopeShortcut();
-        if (pendingDigit != null) this.applyScopeShortcutDigit(pendingDigit);
-      }
-    }
-
     if (this.pendingCount != null && data >= "0" && data <= "9") {
       this.appendPendingCountDigit(data);
       return;
@@ -1233,11 +1183,6 @@ class ReviewApp {
 
     if (data >= "4" && data <= "9") {
       this.appendPendingCountDigit(data);
-      return;
-    }
-
-    if (data >= "1" && data <= "3") {
-      this.startPendingScopeShortcut(data as "1" | "2" | "3");
       return;
     }
 
@@ -1258,6 +1203,9 @@ class ReviewApp {
     if (this.helpMode && matchesKey(data, Key.escape)) { this.helpMode = false; this.requestRender(); return; }
     if (matchesKey(data, Key.escape) && this.clearActiveVisualSelection()) { return; }
 
+    if (data === "1") { this.setScope("git-diff"); return; }
+    if (data === "2") { this.setScope("last-commit"); return; }
+    if (data === "3") { this.setScope("all-files"); return; }
     if (matchesKey(data, Key.shift("tab"))) { this.state = cycleFocusBackward(this.state); this.requestRender(); return; }
     if (matchesKey(data, Key.tab)) { this.state = cycleFocus(this.state); this.requestRender(); return; }
     if (matchesKey(data, Key.ctrl("d"))) { this.moveHalfPage(this.consumePendingCount()); return; }
@@ -1486,7 +1434,7 @@ class ReviewApp {
     lines.push("");
     lines.push(this.theme.fg("warning", "Keys"));
     lines.push(this.theme.fg("muted", "1/2/3 scope • Tab focus • / search • v/V select • t templates • s submit • ctrl+c cancel"));
-    lines.push(this.theme.fg("muted", "j/k move • count+j/k repeat • ctrl+u/d half-page • gg/G top/bottom • Esc clear selection"));
+    lines.push(this.theme.fg("muted", "j/k move • 4j/5k repeat • ctrl+u/d half-page • gg/G top/bottom • Esc clear selection"));
     lines.push(this.theme.fg("muted", "f line/range fix • d line/range discuss • e edit line • x delete line"));
     lines.push(this.theme.fg("muted", "l file • a all • n/p hunks"));
     lines.push("");
